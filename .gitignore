@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+
+# Node.js
+node_modules/
+dist/
+build/
+
+# Docker
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# DB
+postgres-data/
