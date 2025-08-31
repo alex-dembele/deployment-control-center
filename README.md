@@ -4,7 +4,6 @@ Plateforme pour gérer déploiements microservices sur K8s via GitOps.
 
 ## Schéma du Flux de Données (Interactif)
 
-Utilise Mermaid pour visualiser. Copie-colle dans un viewer Mermaid (e.g., mermaid.live).
 
 ```mermaid
 graph TD

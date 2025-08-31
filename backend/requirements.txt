@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+requests
+pydantic
+sqlalchemy
+psycopg2-binary
+bcrypt  # Pour auth simple
+tenacity  # Pour retries AWS
+pygithub  # Pour Git ops
+gitpython
