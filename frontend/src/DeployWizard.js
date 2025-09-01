@@ -15,6 +15,8 @@ function DeployWizard({ onClose }) {
   });
   const [envKeys, setEnvKeys] = useState([]);
   const [tags, setTags] = useState([]);
+  const [prUrl, setPrUrl] = useState(null);
+  
 
   useEffect(() => {
     axios.get('http://localhost:8000/services').then(res => setServices(res.data.services));
@@ -32,15 +34,19 @@ function DeployWizard({ onClose }) {
     }
   }, [form.service]);
 
-  const handleNext = () => {
+    const handleNext = () => {
     if (step === 1 && form.service && form.tag && form.env) setStep(2);
     if (step === 2) setStep(3);
     if (step === 3) {
       axios.post('http://localhost:8000/deploy', form)
-        .then(res => alert(`PR created: ${res.data.pr_url}`))
-        .then(onClose);
+        .then(res => setPrUrl(res.data.pr_url))
+        .catch(err => alert('Deployment failed'));
     }
   };
+
+  if (prUrl) {
+    return <DeployStatus prUrl={prUrl} />;
+  }
 
   return (
     <Box sx={{ p: 3 }}>
