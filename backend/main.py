@@ -6,7 +6,7 @@ import os
 from git import Repo
 from github import Github
 from tenacity import retry, stop_after_attempt, wait_fixed
-from sqlalchemy import create_engine, Column, Integer, String, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
@@ -14,6 +14,7 @@ from typing import Dict, List
 import bcrypt
 from kubernetes import config
 from .templates import get_service_template, get_service_env_keys, update_appset_yaml
+from datetime import datetime
 
 app = FastAPI()
 
@@ -30,6 +31,17 @@ class User(Base):
     hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
 
+class Deployment(Base):
+    __tablename__ = "deployments"
+    id = Column(Integer, primary_key=True, index=True)
+    service = Column(String)
+    env = Column(String)
+    tag = Column(String)
+    pr_url = Column(String)
+    status = Column(String, default="pending")  # pending, approved, rejected
+    created_at = Column(DateTime, default=datetime.utcnow)
+    approved_by = Column(String, nullable=True)
+
 Base.metadata.create_all(bind=engine)
 
 # Utils
@@ -39,10 +51,9 @@ def hash_password(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
 
-# Load kubeconfig with retries
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
 def load_kubeconfig(env: str):
-    kubeconfig_path = os.getenv("KUBE_CONFIG_PATH", f"~/.kube/{env}.yaml")
+    kubeconfig_path = os.getenv("KUBE_CONFIG_PATH", f"/root/.kube/{env}.yaml")
     try:
         config.load_kube_config(config_file=kubeconfig_path)
     except Exception as e:
@@ -77,6 +88,10 @@ class NotifyInput(BaseModel):
     env: str
     pr_url: str
     status: str
+
+class ApproveInput(BaseModel):
+    deploy_id: int
+    approved: bool
 
 def get_db():
     db = SessionLocal()
@@ -169,9 +184,7 @@ def get_service_env_keys_endpoint(service: str):
 @app.post("/deploy")
 def deploy(input: DeployInput, db: Session = Depends(get_db)):
     try:
-        # Load kubeconfig
         load_kubeconfig(input.env)
-
         gh = Github(os.getenv("GITHUB_TOKEN"))
         repo_name = f"nxh-applications-{input.env}"
         gh_repo = gh.get_repo(f"nexahub/{repo_name}")
@@ -220,13 +233,21 @@ def deploy(input: DeployInput, db: Session = Depends(get_db)):
 
         pr = gh_repo.create_pull(title=f"Auto Deploy: {input.service} to {input.tag}", body="Automated deployment", head=branch_name, base="main")
 
-        # Log déploiement dans DB
-        # TODO: Créer table deployments si besoin
+        # Log déploiement
+        deployment = Deployment(
+            service=input.service,
+            env=input.env,
+            tag=input.tag,
+            pr_url=pr.html_url,
+            status="pending" if input.env in ["stag", "prod"] else "approved"
+        )
+        db.add(deployment)
+        db.commit()
+
         if input.env in ["stag", "prod"]:
-            # TODO: Créer demande approbation dans DB
             notify({"service": input.service, "env": input.env, "pr_url": pr.html_url, "status": "pending"})
 
-        return {"pr_url": pr.html_url}
+        return {"pr_url": pr.html_url, "deploy_id": deployment.id}
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -250,3 +271,39 @@ def notify(input: NotifyInput):
         # TODO: Implémenter envoi email via smtplib
         pass
     return {"msg": "Notification sent"}
+
+@app.get("/deployments")
+def get_deployments(db: Session = Depends(get_db)):
+    deployments = db.query(Deployment).filter(Deployment.status == "pending").all()
+    return {"deployments": [{"id": d.id, "service": d.service, "env": d.env, "tag": d.tag, "pr_url": d.pr_url} for d in deployments]}
+
+@app.get("/deployments/{deploy_id}")
+def get_deployment(deploy_id: int, db: Session = Depends(get_db)):
+    deployment = db.query(Deployment).filter(Deployment.id == deploy_id).first()
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    return {"status": deployment.status}
+
+@app.post("/approve")
+def approve_deployment(input: ApproveInput, db: Session = Depends(get_db)):
+    deployment = db.query(Deployment).filter(Deployment.id == input.deploy_id).first()
+    if not deployment:
+        raise HTTPException(404, "Deployment not found")
+    if deployment.status != "pending":
+        raise HTTPException(400, "Deployment already processed")
+    
+    deployment.status = "approved" if input.approved else "rejected"
+    deployment.approved_by = "admin"  # TODO: Récupérer user depuis auth
+    db.commit()
+
+    if input.approved:
+        gh = Github(os.getenv("GITHUB_TOKEN"))
+        repo_name = f"nxh-applications-{deployment.env}"
+        repo = gh.get_repo(f"nexahub/{repo_name}")
+        pr = repo.get_pull(int(deployment.pr_url.split('/')[-1]))
+        pr.merge()
+        notify({"service": deployment.service, "env": deployment.env, "pr_url": deployment.pr_url, "status": "approved"})
+    else:
+        notify({"service": deployment.service, "env": deployment.env, "pr_url": deployment.pr_url, "status": "rejected"})
+
+    return {"msg": "Deployment processed"}
