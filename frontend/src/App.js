@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Grid, Card, CardContent, Typography, Button, TextField, Modal } from '@mui/material';
 import axios from 'axios';
 import DeployWizard from './DeployWizard';
+import Approvals from './Approvals';
 
 function App() {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -36,6 +37,7 @@ function App() {
   return (
     <>
       <Button onClick={() => setWizardOpen(true)}>New Deployment</Button>
+      <Approvals />
       <Grid container spacing={2}>
         {services.map(s => (
           <Grid item xs={4} key={s.name}>
