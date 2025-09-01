@@ -1,37 +1,46 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Typography } from '@mui/material';
-import axios from 'axios';
 import Mermaid from 'mermaid';
 
 function DeployStatus({ prUrl, deployId }) {
   const [status, setStatus] = useState('pending');
-  const prId = prUrl.split('/').pop();
+  const [deployStatus, setDeployStatus] = useState('pending');
 
   useEffect(() => {
     Mermaid.initialize({ startOnLoad: true });
-    const interval = setInterval(() => {
-      axios.get(`http://localhost:8000/pr-status/${prId}`)
-        .then(res => setStatus(res.data.merged ? 'merged' : res.data.status));
-      if (deployId) {
-        axios.get(`http://localhost:8000/deployments/${deployId}`)
-          .then(res => setStatus(res.data.status));
+    const ws = new WebSocket(`ws://localhost:8000/ws/pr-status/${deployId}`);
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.error) {
+        setStatus('error');
+        setDeployStatus('error');
+      } else {
+        setStatus(data.merged ? 'merged' : data.status);
+        setDeployStatus(data.deploy_status);
       }
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [prId, deployId]);
+    };
+    ws.onclose = () => {
+      console.log('WebSocket closed, attempting to reconnect...');
+      setTimeout(() => {
+        window.location.reload(); // Reconnect simpliste
+      }, 5000);
+    };
+    return () => ws.close();
+  }, [deployId]);
 
   const mermaidDiagram = `
     graph TD
       A[Utilisateur: Clique Déployer] --> B[Backend: Valide]
       B --> C[Git: PR Créée]
       C --> D{Attente Validation?}
-      D -->|${status === 'pending' ? 'Oui' : 'Non'}| E[${status === 'pending' ? 'Bloqué PR' : status === 'approved' ? 'Approved' : status === 'merged' ? 'Merged' : 'Rejected'}]
+      D -->|${deployStatus === 'pending' ? 'Oui' : 'Non'}| E[${deployStatus === 'pending' ? 'Bloqué PR' : deployStatus === 'approved' ? 'Approved' : deployStatus === 'merged' ? 'Merged' : 'Rejected'}]
       E --> F[Argo CD Sync]
   `;
 
   return (
     <Box>
-      <Typography>Deployment Status: {status}</Typography>
+      <Typography>Deployment Status: {deployStatus}</Typography>
+      <Typography>PR Status: {status}</Typography>
       <div className="mermaid">{mermaidDiagram}</div>
     </Box>
   );

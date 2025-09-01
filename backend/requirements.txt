@@ -4,13 +4,14 @@ requests
 pydantic
 sqlalchemy
 psycopg2-binary
-bcrypt  # Pour auth simple
-tenacity  # Pour retries AWS
-pygithub  # Pour Git ops
+bcrypt  
+tenacity  
+pygithub  
 gitpython
 bcrypt
 pyyaml
 kubernetes
 gitpython
 pygithub
+websockets
 tenacity

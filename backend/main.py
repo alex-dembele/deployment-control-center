@@ -355,3 +355,27 @@ def get_deployment_history(service: str = None, env: str = None, db: Session = D
         query = query.filter(Deployment.env == env)
     deployments = query.all()
     return {"deployments": [{"id": d.id, "service": d.service, "env": d.env, "tag": d.tag, "pr_url": d.pr_url, "status": d.status, "created_at": d.created_at, "approved_by": d.approved_by} for d in deployments]}
+
+@app.websocket("/ws/pr-status/{deploy_id}")
+async def websocket_pr_status(websocket: WebSocket, deploy_id: int, db: Session = Depends(get_db)):
+    await websocket.accept()
+    try:
+        while True:
+            deployment = db.query(Deployment).filter(Deployment.id == deploy_id).first()
+            if not deployment:
+                await websocket.send_json({"error": "Deployment not found"})
+                break
+            gh = Github(os.getenv("GITHUB_TOKEN"))
+            repo_name = f"nxh-applications-{deployment.env}"
+            repo = gh.get_repo(f"nexahub/{repo_name}")
+            try:
+                pr = repo.get_pull(int(deployment.pr_url.split('/')[-1]))
+                status = {"status": pr.state, "merged": pr.merged, "url": pr.html_url, "deploy_status": deployment.status}
+            except Exception:
+                status = {"error": f"PR not found for deploy_id {deploy_id}", "deploy_status": deployment.status}
+            await websocket.send_json(status)
+            await asyncio.sleep(5)
+    except Exception as e:
+        await websocket.send_json({"error": str(e)})
+    finally:
+        await websocket.close()
