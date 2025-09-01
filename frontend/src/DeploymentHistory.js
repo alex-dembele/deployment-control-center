@@ -1,19 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Typography, Table, TableBody, TableCell, TableHead, TableRow, TextField, Select, MenuItem, FormControl, InputLabel } from '@mui/material';
+import { Box, Typography, Table, TableBody, TableCell, TableHead, TableRow, TextField, Select, MenuItem, FormControl, InputLabel, Button } from '@mui/material';
 import axios from 'axios';
 
 function DeploymentHistory() {
   const [deployments, setDeployments] = useState([]);
   const [serviceFilter, setServiceFilter] = useState('');
   const [envFilter, setEnvFilter] = useState('');
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [perPage] = useState(10);
 
   useEffect(() => {
-    const params = {};
+    const params = { page, per_page: perPage };
     if (serviceFilter) params.service = serviceFilter;
     if (envFilter) params.env = envFilter;
     axios.get('http://localhost:8000/deployments/history', { params })
-      .then(res => setDeployments(res.data.deployments));
-  }, [serviceFilter, envFilter]);
+      .then(res => {
+        setDeployments(res.data.deployments);
+        setTotal(res.data.total);
+      });
+  }, [serviceFilter, envFilter, page]);
 
   return (
     <Box>
@@ -62,6 +68,11 @@ function DeploymentHistory() {
           ))}
         </TableBody>
       </Table>
+      <Box sx={{ mt: 2 }}>
+        <Button disabled={page === 1} onClick={() => setPage(page - 1)}>Previous</Button>
+        <Typography display="inline" sx={{ mx: 2 }}>Page {page} of {Math.ceil(total / perPage)}</Typography>
+        <Button disabled={page * perPage >= total} onClick={() => setPage(page + 1)}>Next</Button>
+      </Box>
     </Box>
   );
 }
