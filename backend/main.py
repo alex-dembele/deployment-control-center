@@ -3,6 +3,7 @@ import requests
 import base64
 import yaml
 import os
+import smtplib
 from git import Repo
 from github import Github
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -379,3 +380,25 @@ async def websocket_pr_status(websocket: WebSocket, deploy_id: int, db: Session 
         await websocket.send_json({"error": str(e)})
     finally:
         await websocket.close()
+
+@app.post("/notify")
+def notify(input: NotifyInput):
+    slack_webhook = os.getenv("SLACK_WEBHOOK_URL")
+    smtp_server = os.getenv("SMTP_SERVER")
+    if slack_webhook:
+        requests.post(slack_webhook, json={
+            "text": f"Deployment {input.status} for {input.service} in {input.env}: {input.pr_url}"
+        })
+    if smtp_server:
+        msg = MIMEText(f"Deployment {input.status} for {input.service} in {input.env}: {input.pr_url}")
+        msg['Subject'] = f"Deployment Notification: {input.service} {input.env}"
+        msg['From'] = os.getenv("SMTP_FROM")
+        msg['To'] = os.getenv("SMTP_TO")
+        try:
+            with smtplib.SMTP(smtp_server, os.getenv("SMTP_PORT", 587)) as server:
+                server.starttls()
+                server.login(os.getenv("SMTP_USER"), os.getenv("SMTP_PASSWORD"))
+                server.send_message(msg)
+        except Exception as e:
+            print(f"Failed to send email: {str(e)}")
+    return {"msg": "Notification sent"}
