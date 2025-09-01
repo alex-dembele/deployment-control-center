@@ -10,8 +10,9 @@ from sqlalchemy import create_engine, Column, Integer, String, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
-from typing import Dict
+from typing import Dict, List
 import bcrypt
+from .templates import get_service_template, get_service_env_keys
 
 app = FastAPI()
 
@@ -50,8 +51,8 @@ class UserLogin(BaseModel):
 class SecretInput(BaseModel):
     service: str
     env: str  # dev/stag/prod
-    vars: Dict[str, str]  # { "NXH_DATABASE_HOST": "value", ... }
-    secrets: list[str]  # Liste des keys qui sont secrets
+    vars: Dict[str, str]
+    secrets: List[str]
     namespace_type: str  # "internal" or "external"
 
 class DeployInput(BaseModel):
@@ -59,7 +60,7 @@ class DeployInput(BaseModel):
     tag: str
     env: str
     vars: Dict[str, str]
-    secrets: list[str]
+    secrets: List[str]
     namespace_type: str  # "internal" or "external"
 
 # DB Dependency
@@ -83,7 +84,6 @@ def suggest_tags(org: str, repo: str):
     if not username or not token:
         return {"error": "DockerHub credentials missing"}
 
-    # Login pour JWT
     login_url = "https://hub.docker.com/v2/users/login"
     login_data = {"username": username, "password": token}
     login_res = requests.post(login_url, json=login_data)
@@ -91,7 +91,6 @@ def suggest_tags(org: str, repo: str):
         return {"error": "DockerHub login failed"}
     jwt = login_res.json()["token"]
 
-    # Query tags avec auth
     url = f"https://hub.docker.com/v2/repositories/{org}/{repo}/tags?page_size=10"
     headers = {"Authorization": f"JWT {jwt}"}
     response = requests.get(url, headers=headers)
@@ -116,16 +115,15 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.username == user.username).first()
     if not db_user or not verify_password(user.password, db_user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    return {"msg": "Login successful", "user": user.username}  # Ajoute JWT plus tard
+    return {"msg": "Login successful", "user": user.username}
 
 @app.post("/generate-secret")
 def generate_secret(input: SecretInput):
     data = {}
     for key, value in input.vars.items():
-        data[key] = base64.b64encode(value.encode()).decode()  # Encode tout en Base64 comme dans l'exemple
+        data[key] = base64.b64encode(value.encode()).decode()
 
-    namespace = f"nxh-{input.namespace_type}-services-ns-{input.env}"  # internal ou external
-
+    namespace = f"nxh-{input.namespace_type}-services-ns-{input.env}"
     yaml_content = {
         "apiVersion": "v1",
         "kind": "Secret",
@@ -137,7 +135,6 @@ def generate_secret(input: SecretInput):
         "data": data
     }
 
-    # Sauvegarde en fichier exemple (pour Git plus tard)
     file_path = f"generated/{input.service}-secret.yaml"
     os.makedirs("generated", exist_ok=True)
     with open(file_path, "w") as f:
@@ -147,20 +144,24 @@ def generate_secret(input: SecretInput):
 
 @app.get("/services")
 def get_services():
-    # Hardcoded exemple ; plus tard DB ou scan Git
     services = [
-        {"name": "validation-api", "envs": ["dev", "stag"], "current_tag_dev": "v1.0.0", "current_tag_stag": "v0.9.0"},
-        {"name": "billing-api", "envs": ["dev"], "current_tag_dev": "v2.1.0"},
-        # Ajoute plus basés sur tes micros
+        {"name": "contract-api", "envs": ["dev", "stag"], "current_tag_dev": "v1.0.4", "current_tag_stag": "v0.9.0"},
+        {"name": "contract-web-admin", "envs": ["dev"], "current_tag_dev": "v1.0.2"},
+        {"name": "retail-api", "envs": ["dev", "stag"], "current_tag_dev": "v1.0.14", "current_tag_stag": "v1.0.10"},
+        {"name": "retail-web-admin", "envs": ["dev"], "current_tag_dev": "v1.0.3"}
     ]
     return {"services": services}
+
+@app.get("/service-env-keys/{service}")
+def get_service_env_keys(service: str):
+    return {"keys": get_service_env_keys(service)}
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
 @app.post("/deploy")
 def deploy(input: DeployInput):
     try:
         gh = Github(os.getenv("GITHUB_TOKEN"))
-        repo_name = f"nxh-applications-{input.env}"  # dev ou stag
+        repo_name = f"nxh-applications-{input.env}"
         gh_repo = gh.get_repo(f"nexahub/{repo_name}")
 
         # Clone local
@@ -191,11 +192,18 @@ def deploy(input: DeployInput):
         with open(secrets_path, "w") as f:
             yaml.dump(yaml_content, f)
 
-        # Ajoute values.yaml et ApplicationSet (TODO: implémenter templates complets)
-        # Pour l'instant, placeholder
-        # values_path = f"{clone_path}/path/to/values.yaml"
-        # with open(values_path, "w") as f:
-        #     yaml.dump({"image": {"tag": input.tag}}, f)
+        # Générer values.yaml basé sur template
+        template = get_service_template(input.service, input.tag)
+        values_path = f"{clone_path}/values/nxh-{input.service}-ms-values.yaml"
+        os.makedirs(os.path.dirname(values_path), exist_ok=True)
+        with open(values_path, "w") as f:
+            yaml.dump(template, f)
+
+        # TODO: Mettre à jour ApplicationSet.yaml (besoin template)
+        # Placeholder: Ajouter service si nouveau
+        # appset_path = f"{clone_path}/appset/nxh-applications-appset-{input.env}.yaml"
+        # with open(appset_path, "a") as f:
+        #     f.write(f"- {input.service}\n")
 
         repo.git.add(all=True)
         repo.git.commit('-m', f"Deploy {input.service} {input.tag} to {input.env}")
