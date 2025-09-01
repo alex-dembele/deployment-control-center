@@ -6,6 +6,9 @@ from .models import SessionLocal, User
 from .utils import hash_password, verify_password
 from pydantic import BaseModel
 from typing import Dict
+from git import Repo
+from github import Github
+from tenacity import retry, stop_after_attempt, wait_fixed
 import yaml
 import requests  # Pour DockerHub API
 import base64    # Pour encoding secrets
@@ -32,6 +35,48 @@ class SecretInput(BaseModel):
     env: str  # dev/stag/prod
     vars: Dict[str, str]  # { "NXH_DATABASE_HOST": "value", ... }
     secrets: list[str]  # Liste des keys qui sont secrets
+
+class DeployInput(BaseModel):
+    service: str
+    tag: str
+    env: str
+    vars: Dict[str, str]
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))  # Retry pour connexions (e.g., AWS plus tard)
+@app.post("/deploy")
+def deploy(input: DeployInput):
+    try:
+        gh = Github(os.getenv("GITHUB_TOKEN"))
+        repo_name = f"nxh-applications-{input.env}"  # ex: nxh-applications-dev
+        gh_repo = gh.get_repo(f"org/{repo_name}")  # Remplace 'org'
+
+        # Clone local
+        clone_path = f"clones/{repo_name}"
+        if not os.path.exists(clone_path):
+            Repo.clone_from(f"https://github.com/org/{repo_name}.git", clone_path)
+
+        repo = Repo(clone_path)
+        branch_name = f"auto-deploy/{input.service}-{input.tag}"
+        repo.git.checkout('-b', branch_name)
+
+        # Générer files (exemple simple; ajoute templates)
+        secrets_path = f"{clone_path}/02-nxh-database-config/nxh-{input.service}-db-secr-{input.env}.yaml"
+        with open(secrets_path, "w") as f:
+            yaml.dump({"data": {k: base64.b64encode(v.encode()).decode() for k,v in input.vars.items()}}, f)
+
+        # Ajoute values.yaml et ApplicationSet (TODO: templates)
+        # ...
+
+        repo.git.add(all=True)
+        repo.git.commit('-m', f"Deploy {input.service} {input.tag} to {input.env}")
+        repo.git.push('--set-upstream', 'origin', branch_name)
+
+        # Créer PR
+        pr = gh_repo.create_pull(title=f"Auto Deploy: {input.service} to {input.tag}", body="Automated", head=branch_name, base="main")
+
+        return {"pr_url": pr.html_url}
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 @app.get("/health")
 def health():

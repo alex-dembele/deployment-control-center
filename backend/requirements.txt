@@ -10,3 +10,6 @@ pygithub  # Pour Git ops
 gitpython
 bcrypt
 pyyaml
+gitpython
+pygithub
+tenacity
