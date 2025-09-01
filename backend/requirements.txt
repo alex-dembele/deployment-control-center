@@ -9,3 +9,4 @@ tenacity  # Pour retries AWS
 pygithub  # Pour Git ops
 gitpython
 bcrypt
+pyyaml
