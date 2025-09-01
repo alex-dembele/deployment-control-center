@@ -12,7 +12,8 @@ from sqlalchemy.orm import sessionmaker, Session
 from pydantic import BaseModel
 from typing import Dict, List
 import bcrypt
-from .templates import get_service_template, get_service_env_keys
+from kubernetes import config
+from .templates import get_service_template, get_service_env_keys, update_appset_yaml
 
 app = FastAPI()
 
@@ -29,15 +30,23 @@ class User(Base):
     hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
 
-# Create tables if not exist
 Base.metadata.create_all(bind=engine)
 
-# Utils for hashing
+# Utils
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+
+# Load kubeconfig with retries
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def load_kubeconfig(env: str):
+    kubeconfig_path = os.getenv("KUBE_CONFIG_PATH", f"~/.kube/{env}.yaml")
+    try:
+        config.load_kube_config(config_file=kubeconfig_path)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to load kubeconfig for {env}: {str(e)}")
 
 # Pydantic Models
 class UserCreate(BaseModel):
@@ -50,10 +59,10 @@ class UserLogin(BaseModel):
 
 class SecretInput(BaseModel):
     service: str
-    env: str  # dev/stag/prod
+    env: str
     vars: Dict[str, str]
     secrets: List[str]
-    namespace_type: str  # "internal" or "external"
+    namespace_type: str
 
 class DeployInput(BaseModel):
     service: str
@@ -61,9 +70,14 @@ class DeployInput(BaseModel):
     env: str
     vars: Dict[str, str]
     secrets: List[str]
-    namespace_type: str  # "internal" or "external"
+    namespace_type: str
 
-# DB Dependency
+class NotifyInput(BaseModel):
+    service: str
+    env: str
+    pr_url: str
+    status: str
+
 def get_db():
     db = SessionLocal()
     try:
@@ -119,10 +133,7 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
 
 @app.post("/generate-secret")
 def generate_secret(input: SecretInput):
-    data = {}
-    for key, value in input.vars.items():
-        data[key] = base64.b64encode(value.encode()).decode()
-
+    data = {k: base64.b64encode(v.encode()).decode() for k, v in input.vars.items()}
     namespace = f"nxh-{input.namespace_type}-services-ns-{input.env}"
     yaml_content = {
         "apiVersion": "v1",
@@ -134,12 +145,10 @@ def generate_secret(input: SecretInput):
         "type": "Opaque",
         "data": data
     }
-
     file_path = f"generated/{input.service}-secret.yaml"
     os.makedirs("generated", exist_ok=True)
     with open(file_path, "w") as f:
         yaml.dump(yaml_content, f)
-
     return {"yaml": yaml_content, "file": file_path}
 
 @app.get("/services")
@@ -153,18 +162,20 @@ def get_services():
     return {"services": services}
 
 @app.get("/service-env-keys/{service}")
-def get_service_env_keys(service: str):
+def get_service_env_keys_endpoint(service: str):
     return {"keys": get_service_env_keys(service)}
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
 @app.post("/deploy")
-def deploy(input: DeployInput):
+def deploy(input: DeployInput, db: Session = Depends(get_db)):
     try:
+        # Load kubeconfig
+        load_kubeconfig(input.env)
+
         gh = Github(os.getenv("GITHUB_TOKEN"))
         repo_name = f"nxh-applications-{input.env}"
         gh_repo = gh.get_repo(f"nexahub/{repo_name}")
 
-        # Clone local
         clone_url = f"https://github.com/nexahub/{repo_name}.git"
         clone_path = f"clones/{repo_name}"
         if not os.path.exists(clone_path):
@@ -192,26 +203,50 @@ def deploy(input: DeployInput):
         with open(secrets_path, "w") as f:
             yaml.dump(yaml_content, f)
 
-        # Générer values.yaml basé sur template
+        # Générer values.yaml
         template = get_service_template(input.service, input.tag)
-        values_path = f"{clone_path}/values/nxh-{input.service}-ms-values.yaml"
+        values_path = f"{clone_path}/04-nxh-services-ms/nxh-{input.service}-ms-values.yaml"
         os.makedirs(os.path.dirname(values_path), exist_ok=True)
         with open(values_path, "w") as f:
             yaml.dump(template, f)
 
-        # TODO: Mettre à jour ApplicationSet.yaml (besoin template)
-        # Placeholder: Ajouter service si nouveau
-        # appset_path = f"{clone_path}/appset/nxh-applications-appset-{input.env}.yaml"
-        # with open(appset_path, "a") as f:
-        #     f.write(f"- {input.service}\n")
+        # Mettre à jour ApplicationSet
+        appset_path = f"{clone_path}/01-nxh-applications-appset/nxh-applications-appset-{input.env}.yaml"
+        update_appset_yaml(appset_path, input.service, input.env)
 
         repo.git.add(all=True)
         repo.git.commit('-m', f"Deploy {input.service} {input.tag} to {input.env}")
         repo.git.push('--set-upstream', 'origin', branch_name)
 
-        # Créer PR
         pr = gh_repo.create_pull(title=f"Auto Deploy: {input.service} to {input.tag}", body="Automated deployment", head=branch_name, base="main")
+
+        # Log déploiement dans DB
+        # TODO: Créer table deployments si besoin
+        if input.env in ["stag", "prod"]:
+            # TODO: Créer demande approbation dans DB
+            notify({"service": input.service, "env": input.env, "pr_url": pr.html_url, "status": "pending"})
 
         return {"pr_url": pr.html_url}
     except Exception as e:
         raise HTTPException(500, str(e))
+
+@app.get("/pr-status/{pr_id}")
+def get_pr_status(pr_id: int):
+    gh = Github(os.getenv("GITHUB_TOKEN"))
+    repo_name = "nxh-applications-dev"  # TODO: Dynamique par env
+    repo = gh.get_repo(f"nexahub/{repo_name}")
+    pr = repo.get_pull(pr_id)
+    return {"status": pr.state, "merged": pr.merged, "url": pr.html_url}
+
+@app.post("/notify")
+def notify(input: NotifyInput):
+    slack_webhook = os.getenv("SLACK_WEBHOOK_URL")
+    smtp_server = os.getenv("SMTP_SERVER")
+    if slack_webhook:
+        requests.post(slack_webhook, json={
+            "text": f"Deployment {input.status} for {input.service} in {input.env}: {input.pr_url}"
+        })
+    if smtp_server:
+        # TODO: Implémenter envoi email via smtplib
+        pass
+    return {"msg": "Notification sent"}

@@ -1,6 +1,7 @@
 from typing import Dict, List
+import yaml
 
-# Templates basés sur les fichiers fournis
+# Templates basés sur les fichiers
 SERVICE_TEMPLATES = {
     "contract-api": {
         "isInternalService": True,
@@ -97,7 +98,6 @@ def get_service_template(service: str, tag: str) -> Dict:
     template = SERVICE_TEMPLATES.get(service, {})
     if not template:
         raise ValueError(f"Unknown service: {service}")
-    # Inject tag dans image
     template_copy = template.copy()
     template_copy["container"]["image"] = template_copy["container"]["image"].format(tag=tag)
     return template_copy
@@ -105,3 +105,24 @@ def get_service_template(service: str, tag: str) -> Dict:
 def get_service_env_keys(service: str) -> List[str]:
     template = SERVICE_TEMPLATES.get(service, {})
     return template.get("secretEnvironmentVariables", {}).get("Keys", [])
+
+def update_appset_yaml(appset_path: str, service: str, env: str):
+    with open(appset_path, "r") as f:
+        appset = yaml.safe_load(f)
+    
+    # Vérifier si service existe
+    elements = appset["spec"]["generators"][0]["list"]["elements"]
+    service_entry = next((e for e in elements if e["name"] == f"nxh-{service}-ms"), None)
+    values_file = f"nxh-{service}-ms-values.yaml"
+
+    if not service_entry:
+        # Ajouter nouveau service
+        elements.append({
+            "name": f"nxh-{service}-ms",
+            "path": "04-nxh-services-ms",
+            "nxhValuesFile": values_file
+        })
+
+    # Écrire mise à jour
+    with open(appset_path, "w") as f:
+        yaml.dump(appset, f)

@@ -10,6 +10,7 @@ pygithub  # Pour Git ops
 gitpython
 bcrypt
 pyyaml
+kubernetes
 gitpython
 pygithub
 tenacity
