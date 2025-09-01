@@ -1,9 +1,9 @@
-# NEXAH Deployment Platform
+# Deployment Platform
 
-The NEXAH Deployment Platform is a web-based application designed to streamline the deployment of microservices to Kubernetes clusters using ArgoCD. It provides a user-friendly interface for managing deployments, secrets, and approvals, with integration to GitHub for pull requests and DockerHub for image tags. The platform supports real-time status updates via WebSocket, notifications via Slack/Email, and a comprehensive deployment history.
+The Deployment Platform is a web-based application designed to streamline the deployment of microservices to Kubernetes clusters using ArgoCD. It provides a user-friendly interface for managing deployments, secrets, and approvals, with integration to GitHub for pull requests and DockerHub for image tags. The platform supports real-time status updates via WebSocket, notifications via Slack/Email, and a comprehensive deployment history.
 
 ## Table of Contents
-- [NEXAH Deployment Platform](#nexah-deployment-platform)
+- [Deployment Platform](#deployment-platform)
   - [Table of Contents](#table-of-contents)
   - [Features](#features)
   - [Architecture](#architecture)
@@ -53,8 +53,8 @@ The NEXAH Deployment Platform is a web-based application designed to streamline 
 ## Installation
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/nexahub/deployment-platform.git
-   cd deployment-platform
+   git clone https://github.com/nexahub/deployment-control-center.git
+   cd deployment-control-center
    ```
 
 2. **Set Up Environment Variables**:
