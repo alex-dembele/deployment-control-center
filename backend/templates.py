@@ -1,7 +1,6 @@
 from typing import Dict, List
 import yaml
 
-# Templates basés sur les fichiers
 SERVICE_TEMPLATES = {
     "contract-api": {
         "isInternalService": True,
@@ -13,7 +12,7 @@ SERVICE_TEMPLATES = {
             "category": "nexah"
         },
         "container": {
-            "image": "nexah/contract-api:{tag}"  # Placeholder pour tag
+            "image": "nexah/contract-api:{tag}"
         },
         "secretEnvironmentVariables": {
             "Enabled": True,
@@ -110,19 +109,26 @@ def update_appset_yaml(appset_path: str, service: str, env: str):
     with open(appset_path, "r") as f:
         appset = yaml.safe_load(f)
     
-    # Vérifier si service existe
     elements = appset["spec"]["generators"][0]["list"]["elements"]
     service_entry = next((e for e in elements if e["name"] == f"nxh-{service}-ms"), None)
     values_file = f"nxh-{service}-ms-values.yaml"
 
     if not service_entry:
-        # Ajouter nouveau service
         elements.append({
             "name": f"nxh-{service}-ms",
             "path": "04-nxh-services-ms",
             "nxhValuesFile": values_file
         })
 
-    # Écrire mise à jour
     with open(appset_path, "w") as f:
         yaml.dump(appset, f)
+
+def get_services() -> List[Dict]:
+    return [
+        {
+            "name": name,
+            "envs": ["dev", "stag"],  # TODO: Dynamique par env
+            "current_tag_dev": SERVICE_TEMPLATES[name]["container"]["image"].format(tag="latest"),
+            "current_tag_stag": SERVICE_TEMPLATES[name]["container"]["image"].format(tag="latest")
+        } for name in SERVICE_TEMPLATES.keys()
+    ]

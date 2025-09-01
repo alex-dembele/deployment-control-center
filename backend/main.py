@@ -13,8 +13,9 @@ from pydantic import BaseModel
 from typing import Dict, List
 import bcrypt
 from kubernetes import config
-from .templates import get_service_template, get_service_env_keys, update_appset_yaml
+from .templates import get_service_template, get_service_env_keys, update_appset_yaml, get_services
 from datetime import datetime
+from git.exc import GitCommandError
 
 app = FastAPI()
 
@@ -75,6 +76,9 @@ class SecretInput(BaseModel):
     secrets: List[str]
     namespace_type: str
 
+    class Config:
+        extra = "forbid"
+
 class DeployInput(BaseModel):
     service: str
     tag: str
@@ -82,6 +86,22 @@ class DeployInput(BaseModel):
     vars: Dict[str, str]
     secrets: List[str]
     namespace_type: str
+
+    class Config:
+        extra = "forbid"
+
+    def validate(self):
+        if self.service not in get_services():
+            raise HTTPException(400, f"Unknown service: {self.service}")
+        if self.env not in ["dev", "stag", "prod"]:
+            raise HTTPException(400, f"Invalid env: {self.env}")
+        if self.namespace_type not in ["internal", "external"]:
+            raise HTTPException(400, f"Invalid namespace_type: {self.namespace_type}")
+        expected_keys = get_service_env_keys(self.service)
+        if set(self.vars.keys()) != set(expected_keys):
+            raise HTTPException(400, f"Invalid vars: expected {expected_keys}")
+        if not all(s in self.vars for s in self.secrets):
+            raise HTTPException(400, "Secrets must be a subset of vars")
 
 class NotifyInput(BaseModel):
     service: str
@@ -147,7 +167,8 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
     return {"msg": "Login successful", "user": user.username}
 
 @app.post("/generate-secret")
-def generate_secret(input: SecretInput):
+def generate_secret(input: SecretInput, db: Session = Depends(get_db)):
+    input.validate()
     data = {k: base64.b64encode(v.encode()).decode() for k, v in input.vars.items()}
     namespace = f"nxh-{input.namespace_type}-services-ns-{input.env}"
     yaml_content = {
@@ -168,13 +189,7 @@ def generate_secret(input: SecretInput):
 
 @app.get("/services")
 def get_services():
-    services = [
-        {"name": "contract-api", "envs": ["dev", "stag"], "current_tag_dev": "v1.0.4", "current_tag_stag": "v0.9.0"},
-        {"name": "contract-web-admin", "envs": ["dev"], "current_tag_dev": "v1.0.2"},
-        {"name": "retail-api", "envs": ["dev", "stag"], "current_tag_dev": "v1.0.14", "current_tag_stag": "v1.0.10"},
-        {"name": "retail-web-admin", "envs": ["dev"], "current_tag_dev": "v1.0.3"}
-    ]
-    return {"services": services}
+    return {"services": get_services()}
 
 @app.get("/service-env-keys/{service}")
 def get_service_env_keys_endpoint(service: str):
@@ -183,6 +198,7 @@ def get_service_env_keys_endpoint(service: str):
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
 @app.post("/deploy")
 def deploy(input: DeployInput, db: Session = Depends(get_db)):
+    input.validate()
     try:
         load_kubeconfig(input.env)
         gh = Github(os.getenv("GITHUB_TOKEN"))
@@ -196,7 +212,13 @@ def deploy(input: DeployInput, db: Session = Depends(get_db)):
 
         repo = Repo(clone_path)
         branch_name = f"auto-deploy/{input.service}-{input.tag}"
-        repo.git.checkout('-b', branch_name)
+
+        # Vérifier si branche existe
+        try:
+            repo.git.checkout(branch_name)
+            repo.git.pull('origin', branch_name)
+        except GitCommandError:
+            repo.git.checkout('-b', branch_name)
 
         # Générer secret.yaml
         data = {k: base64.b64encode(v.encode()).decode() for k, v in input.vars.items()}
@@ -228,12 +250,22 @@ def deploy(input: DeployInput, db: Session = Depends(get_db)):
         update_appset_yaml(appset_path, input.service, input.env)
 
         repo.git.add(all=True)
-        repo.git.commit('-m', f"Deploy {input.service} {input.tag} to {input.env}")
-        repo.git.push('--set-upstream', 'origin', branch_name)
+        repo.git.commit('-m', f"Deploy {input.service} {input.tag} to {input.env}", allow_empty=True)
 
-        pr = gh_repo.create_pull(title=f"Auto Deploy: {input.service} to {input.tag}", body="Automated deployment", head=branch_name, base="main")
+        try:
+            repo.git.push('--set-upstream', 'origin', branch_name)
+        except GitCommandError as e:
+            if "push declined" in str(e).lower():
+                raise HTTPException(400, "Push declined: possible conflict or permissions issue")
+            raise
 
-        # Log déploiement
+        try:
+            pr = gh_repo.create_pull(title=f"Auto Deploy: {input.service} to {input.tag}", body="Automated deployment", head=branch_name, base="main")
+        except Exception as e:
+            if "already exists" in str(e).lower():
+                raise HTTPException(400, f"PR already exists for {branch_name}")
+            raise
+
         deployment = Deployment(
             service=input.service,
             env=input.env,
@@ -256,8 +288,11 @@ def get_pr_status(pr_id: int):
     gh = Github(os.getenv("GITHUB_TOKEN"))
     repo_name = "nxh-applications-dev"  # TODO: Dynamique par env
     repo = gh.get_repo(f"nexahub/{repo_name}")
-    pr = repo.get_pull(pr_id)
-    return {"status": pr.state, "merged": pr.merged, "url": pr.html_url}
+    try:
+        pr = repo.get_pull(pr_id)
+        return {"status": pr.state, "merged": pr.merged, "url": pr.html_url}
+    except Exception:
+        raise HTTPException(404, f"PR {pr_id} not found")
 
 @app.post("/notify")
 def notify(input: NotifyInput):
@@ -300,9 +335,12 @@ def approve_deployment(input: ApproveInput, db: Session = Depends(get_db)):
         gh = Github(os.getenv("GITHUB_TOKEN"))
         repo_name = f"nxh-applications-{deployment.env}"
         repo = gh.get_repo(f"nexahub/{repo_name}")
-        pr = repo.get_pull(int(deployment.pr_url.split('/')[-1]))
-        pr.merge()
-        notify({"service": deployment.service, "env": deployment.env, "pr_url": deployment.pr_url, "status": "approved"})
+        try:
+            pr = repo.get_pull(int(deployment.pr_url.split('/')[-1]))
+            pr.merge()
+            notify({"service": deployment.service, "env": deployment.env, "pr_url": deployment.pr_url, "status": "approved"})
+        except Exception as e:
+            raise HTTPException(500, f"Failed to merge PR: {str(e)}")
     else:
         notify({"service": deployment.service, "env": deployment.env, "pr_url": deployment.pr_url, "status": "rejected"})
 
