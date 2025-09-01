@@ -7,10 +7,15 @@ services:
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - ./backend:/app
+      - ~/.kube:/root/.kube  # Monte les kubeconfigs
     depends_on:
       - db
     environment:
       - DATABASE_URL=postgresql://user:pass@db:5432/deployment_db
+      - KUBE_CONFIG_PATH=/root/.kube/{env}.yaml
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - DOCKERHUB_USERNAME=${DOCKERHUB_USERNAME}
+      - DOCKERHUB_TOKEN=${DOCKERHUB_TOKEN}
 
   frontend:
     build: ./frontend
