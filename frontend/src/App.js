@@ -1,12 +1,28 @@
-import React from 'react';
-import { Button } from '@mui/material';
+import React, { useEffect, useState } from 'react';
+import { Grid, Card, CardContent, Typography, Button } from '@mui/material';
+import axios from 'axios';  // Ajoute à package.json
 
 function App() {
+  const [services, setServices] = useState([]);
+
+  useEffect(() => {
+    axios.get('http://localhost:8000/services')  // TODO: Impl endpoint
+      .then(res => setServices(res.data));
+  }, []);
+
   return (
-    <div>
-      <h1>Deployment Control Center</h1>
-      <Button variant="contained">Test</Button>
-    </div>
+    <Grid container spacing={2}>
+      {services.map(s => (
+        <Grid item xs={4} key={s.name}>
+          <Card>
+            <CardContent>
+              <Typography>{s.name}</Typography>
+              <Button>Déployer</Button>
+            </CardContent>
+          </Card>
+        </Grid>
+      ))}
+    </Grid>
   );
 }
 
