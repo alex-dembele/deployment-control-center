@@ -345,3 +345,13 @@ def approve_deployment(input: ApproveInput, db: Session = Depends(get_db)):
         notify({"service": deployment.service, "env": deployment.env, "pr_url": deployment.pr_url, "status": "rejected"})
 
     return {"msg": "Deployment processed"}
+
+@app.get("/deployments/history")
+def get_deployment_history(service: str = None, env: str = None, db: Session = Depends(get_db)):
+    query = db.query(Deployment)
+    if service:
+        query = query.filter(Deployment.service == service)
+    if env:
+        query = query.filter(Deployment.env == env)
+    deployments = query.all()
+    return {"deployments": [{"id": d.id, "service": d.service, "env": d.env, "tag": d.tag, "pr_url": d.pr_url, "status": d.status, "created_at": d.created_at, "approved_by": d.approved_by} for d in deployments]}

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Grid, Card, CardContent, Typography, Button, TextField, Modal } from '@mui/material';
+import { Grid, Card, CardContent, Typography, Button, TextField, Modal, Tabs, Tab, Box } from '@mui/material';
 import axios from 'axios';
 import DeployWizard from './DeployWizard';
 import Approvals from './Approvals';
+import DeploymentHistory from './DeploymentHistory';
 
 function App() {
   const [loggedIn, setLoggedIn] = useState(false);
@@ -10,6 +11,7 @@ function App() {
   const [password, setPassword] = useState('');
   const [services, setServices] = useState([]);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [tab, setTab] = useState(0);
 
   const handleLogin = () => {
     axios.post('http://localhost:8000/login', { username, password })
@@ -37,20 +39,28 @@ function App() {
   return (
     <>
       <Button onClick={() => setWizardOpen(true)}>New Deployment</Button>
-      <Approvals />
-      <Grid container spacing={2}>
-        {services.map(s => (
-          <Grid item xs={4} key={s.name}>
-            <Card>
-              <CardContent>
-                <Typography>{s.name}</Typography>
-                <Typography>Envs: {s.envs.join(', ')}</Typography>
-                <Button onClick={() => setWizardOpen(true)}>Deploy</Button>
-              </CardContent>
-            </Card>
-          </Grid>
-        ))}
-      </Grid>
+      <Tabs value={tab} onChange={(e, newValue) => setTab(newValue)}>
+        <Tab label="Services" />
+        <Tab label="Approvals" />
+        <Tab label="History" />
+      </Tabs>
+      {tab === 0 && (
+        <Grid container spacing={2}>
+          {services.map(s => (
+            <Grid item xs={4} key={s.name}>
+              <Card>
+                <CardContent>
+                  <Typography>{s.name}</Typography>
+                  <Typography>Envs: {s.envs.join(', ')}</Typography>
+                  <Button onClick={() => setWizardOpen(true)}>Deploy</Button>
+                </CardContent>
+              </Card>
+            </Grid>
+          ))}
+        </Grid>
+      )}
+      {tab === 1 && <Approvals />}
+      {tab === 2 && <DeploymentHistory />}
       <Modal open={wizardOpen} onClose={() => setWizardOpen(false)}>
         <Box sx={{ bgcolor: 'white', p: 4, maxWidth: 600, margin: 'auto', mt: 10 }}>
           <DeployWizard onClose={() => setWizardOpen(false)} />
