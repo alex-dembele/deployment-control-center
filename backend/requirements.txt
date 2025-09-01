@@ -8,3 +8,4 @@ bcrypt  # Pour auth simple
 tenacity  # Pour retries AWS
 pygithub  # Pour Git ops
 gitpython
+bcrypt
