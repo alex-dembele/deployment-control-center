@@ -15,4 +15,5 @@ gitpython
 pygithub
 websockets
 tenacity
-smtplib
+    # smtplib
+pyjwt

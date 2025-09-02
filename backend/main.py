@@ -228,8 +228,8 @@ def deploy(input: DeployInput, db: Session = Depends(get_db)):
         os.makedirs(os.path.dirname(secrets_path), exist_ok=True)
         with open(secrets_path, "w") as f:
             yaml.dump(yaml_content, f)
-        template = get_service_template(input.service, input.tag, input.namespace_type)  
-        values_path = f"{clone_path}/nxh-{input.service}-ms-values.yaml"  
+        template = get_service_template(input.service, input.tag, input.namespace_type)
+        values_path = f"{clone_path}/nxh-{input.service}-ms-values.yaml"  # À la racine
         with open(values_path, "w") as f:
             yaml.dump(template, f)
         appset_path = f"{clone_path}/01-nxh-applications-appset/nxh-applications-appset-{input.env}.yaml"
@@ -266,7 +266,7 @@ def deploy(input: DeployInput, db: Session = Depends(get_db)):
 @app.get("/pr-status/{pr_id}")
 def get_pr_status(pr_id: int):
     gh = Github(os.getenv("GITHUB_TOKEN"))
-    repo_name = "nxh-applications-dev"  
+    repo_name = "nxh-applications-dev"  # TODO: Dynamique par env
     repo = gh.get_repo(f"nexahub/{repo_name}")
     try:
         pr = repo.get_pull(pr_id)
@@ -283,7 +283,7 @@ def notify(input: NotifyInput):
             "text": f"Deployment {input.status} for {input.service} in {input.env}: {input.pr_url}"
         })
     if smtp_server:
-        # TODO: 
+        # TODO: Implémenter envoi email via smtplib
         pass
     return {"msg": "Notification sent"}
 
@@ -307,7 +307,7 @@ def approve_deployment(input: ApproveInput, db: Session = Depends(get_db)):
     if deployment.status != "pending":
         raise HTTPException(400, "Deployment already processed")
     deployment.status = "approved" if input.approved else "rejected"
-    deployment.approved_by = "admin"  
+    deployment.approved_by = "admin"  # TODO: Récupérer user depuis auth
     db.commit()
     if input.approved:
         gh = Github(os.getenv("GITHUB_TOKEN"))
