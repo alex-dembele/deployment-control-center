@@ -17,3 +17,4 @@ websockets
 tenacity
     # smtplib
 pyjwt
+argocd-python-client
