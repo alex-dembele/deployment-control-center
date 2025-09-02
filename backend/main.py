@@ -1,9 +1,8 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, WebSocket
 import requests
 import base64
 import yaml
 import os
-import smtplib
 from git import Repo
 from github import Github
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -17,6 +16,8 @@ from kubernetes import config
 from .templates import get_service_template, get_service_env_keys, update_appset_yaml, get_services
 from datetime import datetime
 from git.exc import GitCommandError
+import asyncio
+import json
 
 app = FastAPI()
 
@@ -40,7 +41,7 @@ class Deployment(Base):
     env = Column(String)
     tag = Column(String)
     pr_url = Column(String)
-    status = Column(String, default="pending")  # pending, approved, rejected
+    status = Column(String, default="pending")
     created_at = Column(DateTime, default=datetime.utcnow)
     approved_by = Column(String, nullable=True)
 
@@ -56,6 +57,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
 def load_kubeconfig(env: str):
     kubeconfig_path = os.getenv("KUBE_CONFIG_PATH", f"/root/.kube/{env}.yaml")
+    if not os.path.exists(kubeconfig_path):
+        raise HTTPException(400, f"Kubeconfig not found: {kubeconfig_path}")
     try:
         config.load_kube_config(config_file=kubeconfig_path)
     except Exception as e:
@@ -92,15 +95,11 @@ class DeployInput(BaseModel):
         extra = "forbid"
 
     def validate(self):
-        if self.service not in get_services():
-            raise HTTPException(400, f"Unknown service: {self.service}")
         if self.env not in ["dev", "stag", "prod"]:
             raise HTTPException(400, f"Invalid env: {self.env}")
         if self.namespace_type not in ["internal", "external"]:
             raise HTTPException(400, f"Invalid namespace_type: {self.namespace_type}")
-        expected_keys = get_service_env_keys(self.service)
-        if set(self.vars.keys()) != set(expected_keys):
-            raise HTTPException(400, f"Invalid vars: expected {expected_keys}")
+        # Pas de validation stricte sur vars/secrets pour permettre custom projects
         if not all(s in self.vars for s in self.secrets):
             raise HTTPException(400, "Secrets must be a subset of vars")
 
@@ -122,7 +121,6 @@ def get_db():
         db.close()
 
 # Endpoints
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -133,14 +131,12 @@ def suggest_tags(org: str, repo: str):
     token = os.getenv("DOCKERHUB_TOKEN")
     if not username or not token:
         return {"error": "DockerHub credentials missing"}
-
     login_url = "https://hub.docker.com/v2/users/login"
     login_data = {"username": username, "password": token}
     login_res = requests.post(login_url, json=login_data)
     if login_res.status_code != 200:
         return {"error": "DockerHub login failed"}
     jwt = login_res.json()["token"]
-
     url = f"https://hub.docker.com/v2/repositories/{org}/{repo}/tags?page_size=10"
     headers = {"Authorization": f"JWT {jwt}"}
     response = requests.get(url, headers=headers)
@@ -189,7 +185,7 @@ def generate_secret(input: SecretInput, db: Session = Depends(get_db)):
     return {"yaml": yaml_content, "file": file_path}
 
 @app.get("/services")
-def get_services():
+def get_services_endpoint():
     return {"services": get_services()}
 
 @app.get("/service-env-keys/{service}")
@@ -205,23 +201,17 @@ def deploy(input: DeployInput, db: Session = Depends(get_db)):
         gh = Github(os.getenv("GITHUB_TOKEN"))
         repo_name = f"nxh-applications-{input.env}"
         gh_repo = gh.get_repo(f"nexahub/{repo_name}")
-
         clone_url = f"https://github.com/nexahub/{repo_name}.git"
         clone_path = f"clones/{repo_name}"
         if not os.path.exists(clone_path):
             Repo.clone_from(clone_url, clone_path)
-
         repo = Repo(clone_path)
         branch_name = f"auto-deploy/{input.service}-{input.tag}"
-
-        # Vérifier si branche existe
         try:
             repo.git.checkout(branch_name)
             repo.git.pull('origin', branch_name)
         except GitCommandError:
             repo.git.checkout('-b', branch_name)
-
-        # Générer secret.yaml
         data = {k: base64.b64encode(v.encode()).decode() for k, v in input.vars.items()}
         namespace = f"nxh-{input.namespace_type}-services-ns-{input.env}"
         yaml_content = {
@@ -238,35 +228,26 @@ def deploy(input: DeployInput, db: Session = Depends(get_db)):
         os.makedirs(os.path.dirname(secrets_path), exist_ok=True)
         with open(secrets_path, "w") as f:
             yaml.dump(yaml_content, f)
-
-        # Générer values.yaml
-        template = get_service_template(input.service, input.tag)
-        values_path = f"{clone_path}/04-nxh-services-ms/nxh-{input.service}-ms-values.yaml"
-        os.makedirs(os.path.dirname(values_path), exist_ok=True)
+        template = get_service_template(input.service, input.tag, input.namespace_type)  
+        values_path = f"{clone_path}/nxh-{input.service}-ms-values.yaml"  
         with open(values_path, "w") as f:
             yaml.dump(template, f)
-
-        # Mettre à jour ApplicationSet
         appset_path = f"{clone_path}/01-nxh-applications-appset/nxh-applications-appset-{input.env}.yaml"
         update_appset_yaml(appset_path, input.service, input.env)
-
         repo.git.add(all=True)
         repo.git.commit('-m', f"Deploy {input.service} {input.tag} to {input.env}", allow_empty=True)
-
         try:
             repo.git.push('--set-upstream', 'origin', branch_name)
         except GitCommandError as e:
             if "push declined" in str(e).lower():
                 raise HTTPException(400, "Push declined: possible conflict or permissions issue")
             raise
-
         try:
             pr = gh_repo.create_pull(title=f"Auto Deploy: {input.service} to {input.tag}", body="Automated deployment", head=branch_name, base="main")
         except Exception as e:
             if "already exists" in str(e).lower():
                 raise HTTPException(400, f"PR already exists for {branch_name}")
             raise
-
         deployment = Deployment(
             service=input.service,
             env=input.env,
@@ -276,10 +257,8 @@ def deploy(input: DeployInput, db: Session = Depends(get_db)):
         )
         db.add(deployment)
         db.commit()
-
         if input.env in ["stag", "prod"]:
             notify({"service": input.service, "env": input.env, "pr_url": pr.html_url, "status": "pending"})
-
         return {"pr_url": pr.html_url, "deploy_id": deployment.id}
     except Exception as e:
         raise HTTPException(500, str(e))
@@ -287,7 +266,7 @@ def deploy(input: DeployInput, db: Session = Depends(get_db)):
 @app.get("/pr-status/{pr_id}")
 def get_pr_status(pr_id: int):
     gh = Github(os.getenv("GITHUB_TOKEN"))
-    repo_name = "nxh-applications-dev"  # TODO: Dynamique par env
+    repo_name = "nxh-applications-dev"  
     repo = gh.get_repo(f"nexahub/{repo_name}")
     try:
         pr = repo.get_pull(pr_id)
@@ -304,7 +283,7 @@ def notify(input: NotifyInput):
             "text": f"Deployment {input.status} for {input.service} in {input.env}: {input.pr_url}"
         })
     if smtp_server:
-        # TODO: Implémenter envoi email via smtplib
+        # TODO: 
         pass
     return {"msg": "Notification sent"}
 
@@ -327,11 +306,9 @@ def approve_deployment(input: ApproveInput, db: Session = Depends(get_db)):
         raise HTTPException(404, "Deployment not found")
     if deployment.status != "pending":
         raise HTTPException(400, "Deployment already processed")
-    
     deployment.status = "approved" if input.approved else "rejected"
-    deployment.approved_by = "admin"  # TODO: Récupérer user depuis auth
+    deployment.approved_by = "admin"  
     db.commit()
-
     if input.approved:
         gh = Github(os.getenv("GITHUB_TOKEN"))
         repo_name = f"nxh-applications-{deployment.env}"
@@ -344,27 +321,7 @@ def approve_deployment(input: ApproveInput, db: Session = Depends(get_db)):
             raise HTTPException(500, f"Failed to merge PR: {str(e)}")
     else:
         notify({"service": deployment.service, "env": deployment.env, "pr_url": deployment.pr_url, "status": "rejected"})
-
     return {"msg": "Deployment processed"}
-
-@app.get("/deployments/history")
-def get_deployment_history(service: str = None, env: str = None, page: int = 1, per_page: int = 10, db: Session = Depends(get_db)):
-    query = db.query(Deployment)
-    if service:
-        query = query.filter(Deployment.service == service)
-    if env:
-        query = query.filter(Deployment.env == env)
-    total = query.count()
-    deployments = query.offset((page - 1) * per_page).limit(per_page).all()
-    return {
-        "deployments": [
-            {"id": d.id, "service": d.service, "env": d.env, "tag": d.tag, "pr_url": d.pr_url, "status": d.status, "created_at": d.created_at, "approved_by": d.approved_by}
-            for d in deployments
-        ],
-        "total": total,
-        "page": page,
-        "per_page": per_page
-    }
 
 @app.websocket("/ws/pr-status/{deploy_id}")
 async def websocket_pr_status(websocket: WebSocket, deploy_id: int, db: Session = Depends(get_db)):
@@ -389,26 +346,3 @@ async def websocket_pr_status(websocket: WebSocket, deploy_id: int, db: Session 
         await websocket.send_json({"error": str(e)})
     finally:
         await websocket.close()
-
-@app.post("/notify")
-def notify(input: NotifyInput):
-    slack_webhook = os.getenv("SLACK_WEBHOOK_URL")
-    smtp_server = os.getenv("SMTP_SERVER")
-    if slack_webhook:
-        requests.post(slack_webhook, json={
-            "text": f"Deployment {input.status} for {input.service} in {input.env}: {input.pr_url}"
-        })
-    if smtp_server:
-        msg = MIMEText(f"Deployment {input.status} for {input.service} in {input.env}: {input.pr_url}")
-        msg['Subject'] = f"Deployment Notification: {input.service} {input.env}"
-        msg['From'] = os.getenv("SMTP_FROM")
-        msg['To'] = os.getenv("SMTP_TO")
-        try:
-            with smtplib.SMTP(smtp_server, os.getenv("SMTP_PORT", 587)) as server:
-                server.starttls()
-                server.login(os.getenv("SMTP_USER"), os.getenv("SMTP_PASSWORD"))
-                server.send_message(msg)
-        except Exception as e:
-            print(f"Failed to send email: {str(e)}")
-    return {"msg": "Notification sent"}
-

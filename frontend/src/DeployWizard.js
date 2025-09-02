@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Button, TextField, Select, MenuItem, FormControl, InputLabel, Box, Typography } from '@mui/material';
+import { Button, TextField, Select, MenuItem, FormControl, InputLabel, Box, Typography, Checkbox, ListItemText } from '@mui/material';
 import axios from 'axios';
 
 function DeployWizard({ onClose }) {
@@ -15,8 +15,7 @@ function DeployWizard({ onClose }) {
   });
   const [envKeys, setEnvKeys] = useState([]);
   const [tags, setTags] = useState([]);
-  const [prUrl, setPrUrl] = useState(null);
-  
+  const [customVars, setCustomVars] = useState([]); 
 
   useEffect(() => {
     axios.get('http://localhost:8000/services').then(res => setServices(res.data.services));
@@ -28,25 +27,31 @@ function DeployWizard({ onClose }) {
         .then(res => {
           setEnvKeys(res.data.keys);
           setForm(f => ({ ...f, vars: res.data.keys.reduce((acc, key) => ({ ...acc, [key]: '' }), {}) }));
+        }).catch(() => {
+          setEnvKeys([]);  
         });
       axios.get(`http://localhost:8000/suggest-tags/nexah/${form.service}`)
         .then(res => setTags(res.data.tags || []));
     }
   }, [form.service]);
 
-    const handleNext = () => {
+  const addCustomVar = () => {
+    const newKey = prompt('Enter new var key (e.g., MY_VAR):');
+    if (newKey) {
+      setCustomVars([...customVars, newKey]);
+      setForm(f => ({ ...f, vars: { ...f.vars, [newKey]: '' } }));
+    }
+  };
+
+  const handleNext = () => {
     if (step === 1 && form.service && form.tag && form.env) setStep(2);
     if (step === 2) setStep(3);
     if (step === 3) {
       axios.post('http://localhost:8000/deploy', form)
-        .then(res => setPrUrl(res.data.pr_url))
-        .catch(err => alert('Deployment failed'));
+        .then(res => alert(`PR created: ${res.data.pr_url}`))
+        .then(onClose);
     }
   };
-
-  if (prUrl) {
-    return <DeployStatus prUrl={prUrl} />;
-  }
 
   return (
     <Box sx={{ p: 3 }}>
@@ -56,6 +61,7 @@ function DeployWizard({ onClose }) {
             <InputLabel>Service</InputLabel>
             <Select value={form.service} onChange={e => setForm({ ...form, service: e.target.value })}>
               {services.map(s => <MenuItem key={s.name} value={s.name}>{s.name}</MenuItem>)}
+              <MenuItem value="custom">Custom Project</MenuItem>  // Option pour custom
             </Select>
           </FormControl>
           <FormControl fullWidth>
@@ -84,7 +90,7 @@ function DeployWizard({ onClose }) {
       {step === 2 && (
         <>
           <Typography>Environment Variables</Typography>
-          {envKeys.map(key => (
+          {envKeys.concat(customVars).map(key => (
             <Box key={key}>
               <TextField
                 label={key}
@@ -92,11 +98,14 @@ function DeployWizard({ onClose }) {
                 value={form.vars[key] || ''}
                 onChange={e => setForm({ ...form, vars: { ...form.vars, [key]: e.target.value } })}
               />
-              <Button onClick={() => setForm({ ...form, secrets: form.secrets.includes(key) ? form.secrets.filter(k => k !== key) : [...form.secrets, key] })}>
-                {form.secrets.includes(key) ? 'Unmark Secret' : 'Mark as Secret'}
-              </Button>
+              <Checkbox
+                checked={form.secrets.includes(key)}
+                onChange={() => setForm({ ...form, secrets: form.secrets.includes(key) ? form.secrets.filter(k => k !== key) : [...form.secrets, key] })}
+              />
+              <ListItemText primary="Secret" />
             </Box>
           ))}
+          <Button onClick={addCustomVar}>Add Custom Var</Button>  // Pour custom projects
         </>
       )}
       {step === 3 && (

@@ -93,17 +93,9 @@ SERVICE_TEMPLATES = {
     }
 }
 
-def get_service_template(service: str, tag: str) -> Dict:
-    template = SERVICE_TEMPLATES.get(service, {})
-    if not template:
-        raise ValueError(f"Unknown service: {service}")
-    template_copy = template.copy()
-    template_copy["container"]["image"] = template_copy["container"]["image"].format(tag=tag)
-    return template_copy
-
 def get_service_env_keys(service: str) -> List[str]:
     template = SERVICE_TEMPLATES.get(service, {})
-    return template.get("secretEnvironmentVariables", {}).get("Keys", [])
+    return template.get("secretEnvironmentVariables", {}).get("Keys", [])  
 
 def update_appset_yaml(appset_path: str, service: str, env: str):
     with open(appset_path, "r") as f:
@@ -127,8 +119,8 @@ def get_services() -> List[Dict]:
     return [
         {
             "name": name,
-            "envs": ["dev", "stag"],  # TODO: Dynamique par env
+            "envs": ["dev", "stag"],
             "current_tag_dev": SERVICE_TEMPLATES[name]["container"]["image"].format(tag="latest"),
             "current_tag_stag": SERVICE_TEMPLATES[name]["container"]["image"].format(tag="latest")
         } for name in SERVICE_TEMPLATES.keys()
-    ]
+    ] + [{"name": "custom", "envs": ["dev", "stag", "prod"], "current_tag_dev": "latest", "current_tag_stag": "latest"}]  # Ajoute option pour custom
